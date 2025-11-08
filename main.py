@@ -17,6 +17,16 @@ similarity = pickle.load(open("models/similarity.pkl", "rb"))
 watchlists: Dict[str, List[str]] = {}
 
 # ===============================
+# Genre Mapping
+# ===============================
+genre_map = {
+    28: 'Action', 12: 'Adventure', 16: 'Animation', 35: 'Comedy', 80: 'Crime',
+    99: 'Documentary', 18: 'Drama', 10751: 'Family', 14: 'Fantasy', 36: 'History',
+    27: 'Horror', 10402: 'Music', 9648: 'Mystery', 10749: 'Romance', 878: 'Science Fiction',
+    10770: 'TV Movie', 53: 'Thriller', 10752: 'War', 37: 'Western', 10765: 'TV Movie'
+}
+
+# ===============================
 # FastAPI Initialization
 # ===============================
 app = FastAPI(
@@ -189,6 +199,28 @@ def get_movie_by_title(movie_title: str):
     row = movie_row.iloc[0]
     poster, overview, _ = fetch_poster_and_overview(row.movie_id)
     return Movie(movie_id=row.movie_id, title=row.title, overview=overview, poster_url=poster)
+
+# ===============================
+# Movies by Genre Endpoint
+# ===============================
+@app.get("/movies/genre/{genre_id}", response_model=List[TMDBMovie])
+def get_movies_by_genre(genre_id: int, limit: int = Query(200, description="Number of movies to fetch (max 200)")):
+    """
+    Fetch movies by genre ID.
+    Returns up to `limit` movies in TMDBMovie format.
+    """
+    if genre_id not in genre_map:
+        raise HTTPException(status_code=404, detail="Genre ID not found")
+
+    # Filter movies containing the genre_id
+    filtered_movies = movies[movies['genre_ids'].apply(lambda x: genre_id in x if isinstance(x, list) else False)]
+    filtered_movies = filtered_movies.head(limit)
+
+    results = []
+    for _, row in filtered_movies.iterrows():
+        tmdb_data = fetch_tmdb_movie_data(row.movie_id)
+        results.append(TMDBMovie(**tmdb_data))
+    return results
 
 # ===============================
 # Unified Recommendation Endpoint
