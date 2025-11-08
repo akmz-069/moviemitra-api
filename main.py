@@ -1,9 +1,10 @@
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict
 import pickle
 import pandas as pd
-from utils import fetch_poster_and_overview
+from utils import fetch_poster_and_overview, fetch_tmdb_movie_data
 
 # ===============================
 # Load dataset and similarity matrix
@@ -25,6 +26,17 @@ app = FastAPI(
 )
 
 # ===============================
+# CORS Middleware
+# ===============================
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, replace with specific origins like ["http://localhost:5173"]
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ===============================
 # Data Models
 # ===============================
 class Movie(BaseModel):
@@ -32,6 +44,23 @@ class Movie(BaseModel):
     title: str
     overview: Optional[str] = ""
     poster_url: Optional[str] = ""
+
+class TMDBMovie(BaseModel):
+    adult: bool
+    backdrop_path: Optional[str] = None
+    genre_ids: List[int]
+    id: int
+    original_language: str
+    original_title: str
+    overview: Optional[str] = None
+    popularity: float
+    poster_path: Optional[str] = None
+    release_date: Optional[str] = None
+    title: str
+    video: bool
+    vote_average: float
+    vote_count: int
+    isFavourite: Optional[bool] = None
 
 class WatchlistItem(BaseModel):
     username: str
@@ -69,7 +98,7 @@ def get_dropdown_movies(
 ):
     """
     Returns:
-    - All movie titles (for dropdowns/autocomplete)
+    - All movies with movie_id and title (for dropdowns/autocomplete)
     - A specific movie title by ID
     - A movie ID by title
     """
@@ -86,8 +115,14 @@ def get_dropdown_movies(
                 raise HTTPException(status_code=404, detail=f"Movie '{movie_title}' not found")
             return {"movie_id": int(movie_row.iloc[0]['movie_id']), "title": movie_title}
 
-        movie_names = movies["title"].dropna().tolist()
-        return {"movies": movie_names}
+        movie_list = []
+        for _, row in movies.iterrows():
+            if pd.notna(row["title"]):
+                movie_list.append({
+                    "movie_id": int(row["movie_id"]),
+                    "title": row["title"]
+                })
+        return {"movies": movie_list}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -110,7 +145,7 @@ def get_all_movies(limit: int = Query(50, description="Number of movies to fetch
 # 🆕 Popular Movies Endpoint (fetch 40 movies)
 # ===============================
 @app.get("/movies/popular", response_model=List[Movie])
-def get_popular_movies(limit: int = Query(40, description="Number of popular movies to fetch")):
+def get_popular_movies(limit: int = Query(250, description="Number of popular movies to fetch")):
     """
     Returns top popular movies sorted by vote_count or popularity.
     """
@@ -158,13 +193,14 @@ def get_movie_by_title(movie_title: str):
 # ===============================
 # Unified Recommendation Endpoint
 # ===============================
-@app.get("/recommend", response_model=List[Movie])
+@app.get("/recommend", response_model=List[TMDBMovie])
 def recommend(
     movie_id: Optional[int] = Query(None, description="Movie ID"),
     movie_title: Optional[str] = Query(None, description="Movie title"),
 ):
     """
     Generate recommendations based on a movie ID or title.
+    Returns an array of TMDBMovie objects matching the frontend type.
     """
     if not movie_id and not movie_title:
         raise HTTPException(status_code=400, detail="Provide either 'movie_id' or 'movie_title'")
@@ -186,17 +222,18 @@ def recommend(
     results = []
     for i in similar_movies:
         row = movies.iloc[i[0]]
-        poster, overview, _ = fetch_poster_and_overview(row.movie_id)
-        results.append(Movie(movie_id=row.movie_id, title=row.title, overview=overview, poster_url=poster))
+        tmdb_data = fetch_tmdb_movie_data(row.movie_id)
+        results.append(TMDBMovie(**tmdb_data))
     return results
 
 # ===============================
 # Recommendation by Title Only
 # ===============================
-@app.get("/recommend/title/{movie_title}", response_model=List[Movie])
+@app.get("/recommend/title/{movie_title}", response_model=List[TMDBMovie])
 def get_recommendations_by_title(movie_title: str):
     """
     Get recommendations based on a specific movie title.
+    Returns an array of TMDBMovie objects matching the frontend type.
     """
     movie_row = movies[movies["title"].str.lower() == movie_title.lower()]
     if movie_row.empty:
@@ -209,8 +246,8 @@ def get_recommendations_by_title(movie_title: str):
     recommendations = []
     for i in similar_movies:
         row = movies.iloc[i[0]]
-        poster, overview, _ = fetch_poster_and_overview(row.movie_id)
-        recommendations.append(Movie(movie_id=row.movie_id, title=row.title, overview=overview, poster_url=poster))
+        tmdb_data = fetch_tmdb_movie_data(row.movie_id)
+        recommendations.append(TMDBMovie(**tmdb_data))
     return recommendations
 
 # ===============================
