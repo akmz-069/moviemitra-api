@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict
+from contextlib import asynccontextmanager
 import pickle
 import pandas as pd
 from utils import fetch_poster_and_overview, fetch_tmdb_movie_data
@@ -27,12 +28,24 @@ genre_map = {
 }
 
 # ===============================
+# Lifespan Handler
+# ===============================
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    print("🚀 MovieMitra API is starting up...")
+    yield
+    # Shutdown
+    print("🛑 MovieMitra API is shutting down...")
+
+# ===============================
 # FastAPI Initialization
 # ===============================
 app = FastAPI(
     title="🎬 MovieMitra API",
     version="3.0",
     description="MovieMitra API for movie recommendations, popular movies, and watchlist management.",
+    lifespan=lifespan,
 )
 
 # ===============================
@@ -155,7 +168,7 @@ def get_all_movies(limit: int = Query(50, description="Number of movies to fetch
 # 🆕 Popular Movies Endpoint (fetch 40 movies)
 # ===============================
 @app.get("/movies/popular", response_model=List[Movie])
-def get_popular_movies(limit: int = Query(250, description="Number of popular movies to fetch")):
+def get_popular_movies(limit: int = Query(50, description="Number of popular movies to fetch")):
     """
     Returns top popular movies sorted by vote_count or popularity.
     """
