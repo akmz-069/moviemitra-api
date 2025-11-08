@@ -12,7 +12,7 @@ movies_dict = pickle.load(open("models/movie_dict.pkl", "rb"))
 movies = pd.DataFrame(movies_dict)
 similarity = pickle.load(open("models/similarity.pkl", "rb"))
 
-# Temporary in-memory watchlists
+# In-memory user watchlists
 watchlists: Dict[str, List[str]] = {}
 
 # ===============================
@@ -20,8 +20,8 @@ watchlists: Dict[str, List[str]] = {}
 # ===============================
 app = FastAPI(
     title="🎬 MovieMitra API",
-    version="2.4",
-    description="Backend API for MovieMitra movie recommender system built with FastAPI.",
+    version="3.0",
+    description="MovieMitra API for movie recommendations, popular movies, and watchlist management.",
 )
 
 # ===============================
@@ -48,7 +48,7 @@ def read_root():
         "available_endpoints": [
             "/movies",
             "/movies/popular",
-            "/movies/names",
+            "/movies/dropdown",
             "/movies/{movie_id}",
             "/movies/title/{movie_title}",
             "/recommend",
@@ -60,16 +60,16 @@ def read_root():
     }
 
 # ===============================
-# Enhanced Movie Names Endpoint
+# 🎬 Dropdown Movie Names Endpoint
 # ===============================
-@app.get("/movies/names")
-def get_movie_names(
+@app.get("/movies/dropdown")
+def get_dropdown_movies(
     movie_id: Optional[int] = Query(None, description="Optional movie ID to get its title"),
     movie_title: Optional[str] = Query(None, description="Optional movie title to get its ID")
 ):
     """
     Returns:
-    - All movie titles (default)
+    - All movie titles (for dropdowns/autocomplete)
     - A specific movie title by ID
     - A movie ID by title
     """
@@ -97,6 +97,9 @@ def get_movie_names(
 # ===============================
 @app.get("/movies", response_model=List[Movie])
 def get_all_movies(limit: int = Query(50, description="Number of movies to fetch")):
+    """
+    Fetch all movies up to a given limit.
+    """
     result = []
     for _, row in movies.head(limit).iterrows():
         poster, overview, _ = fetch_poster_and_overview(row.movie_id)
@@ -109,7 +112,7 @@ def get_all_movies(limit: int = Query(50, description="Number of movies to fetch
 @app.get("/movies/popular", response_model=List[Movie])
 def get_popular_movies(limit: int = Query(40, description="Number of popular movies to fetch")):
     """
-    Returns a list of popular movies from the dataset (default 40).
+    Returns top popular movies sorted by vote_count or popularity.
     """
     try:
         if "vote_count" in movies.columns:
@@ -160,6 +163,9 @@ def recommend(
     movie_id: Optional[int] = Query(None, description="Movie ID"),
     movie_title: Optional[str] = Query(None, description="Movie title"),
 ):
+    """
+    Generate recommendations based on a movie ID or title.
+    """
     if not movie_id and not movie_title:
         raise HTTPException(status_code=400, detail="Provide either 'movie_id' or 'movie_title'")
 
@@ -185,16 +191,21 @@ def recommend(
     return results
 
 # ===============================
-# Recommendation by Title
+# Recommendation by Title Only
 # ===============================
 @app.get("/recommend/title/{movie_title}", response_model=List[Movie])
 def get_recommendations_by_title(movie_title: str):
+    """
+    Get recommendations based on a specific movie title.
+    """
     movie_row = movies[movies["title"].str.lower() == movie_title.lower()]
     if movie_row.empty:
         raise HTTPException(status_code=404, detail=f"Movie '{movie_title}' not found")
+
     movie_index = movie_row.index[0]
     distances = similarity[movie_index]
     similar_movies = sorted(list(enumerate(distances)), reverse=True, key=lambda x: x[1])[1:11]
+
     recommendations = []
     for i in similar_movies:
         row = movies.iloc[i[0]]
@@ -207,6 +218,9 @@ def get_recommendations_by_title(movie_title: str):
 # ===============================
 @app.get("/watchlist/{username}", response_model=List[Movie])
 def get_watchlist(username: str):
+    """
+    Fetch a user's watchlist.
+    """
     movie_titles = watchlists.get(username, [])
     result = []
     for title in movie_titles:
