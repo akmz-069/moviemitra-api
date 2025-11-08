@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict
 import pickle
 import pandas as pd
 from utils import fetch_poster_and_overview
@@ -10,21 +10,19 @@ from utils import fetch_poster_and_overview
 # ===============================
 movies_dict = pickle.load(open("models/movie_dict.pkl", "rb"))
 movies = pd.DataFrame(movies_dict)
-
 similarity = pickle.load(open("models/similarity.pkl", "rb"))
 
-# Temporary in-memory user watchlists
+# Temporary in-memory watchlists
 watchlists: Dict[str, List[str]] = {}
 
 # ===============================
-# FastAPI app initialization
+# FastAPI Initialization
 # ===============================
 app = FastAPI(
     title="🎬 MovieMitra API",
-    version="2.0",
-    description="Backend API for MovieMitra movie recommender system using FastAPI.",
+    version="2.4",
+    description="Backend API for MovieMitra movie recommender system built with FastAPI.",
 )
-
 
 # ===============================
 # Data Models
@@ -35,11 +33,9 @@ class Movie(BaseModel):
     overview: Optional[str] = ""
     poster_url: Optional[str] = ""
 
-
 class WatchlistItem(BaseModel):
     username: str
     movie_title: str
-
 
 # ===============================
 # Root Endpoint
@@ -51,6 +47,8 @@ def read_root():
         "message": "Welcome to MovieMitra API 🎬",
         "available_endpoints": [
             "/movies",
+            "/movies/popular",
+            "/movies/names",
             "/movies/{movie_id}",
             "/movies/title/{movie_title}",
             "/recommend",
@@ -61,56 +59,101 @@ def read_root():
         ],
     }
 
+# ===============================
+# Enhanced Movie Names Endpoint
+# ===============================
+@app.get("/movies/names")
+def get_movie_names(
+    movie_id: Optional[int] = Query(None, description="Optional movie ID to get its title"),
+    movie_title: Optional[str] = Query(None, description="Optional movie title to get its ID")
+):
+    """
+    Returns:
+    - All movie titles (default)
+    - A specific movie title by ID
+    - A movie ID by title
+    """
+    try:
+        if movie_id is not None:
+            movie_row = movies[movies["movie_id"] == movie_id]
+            if movie_row.empty:
+                raise HTTPException(status_code=404, detail=f"Movie ID '{movie_id}' not found")
+            return {"movie_id": movie_id, "title": movie_row.iloc[0]["title"]}
+
+        if movie_title is not None:
+            movie_row = movies[movies["title"].str.lower() == movie_title.lower()]
+            if movie_row.empty:
+                raise HTTPException(status_code=404, detail=f"Movie '{movie_title}' not found")
+            return {"movie_id": int(movie_row.iloc[0]['movie_id']), "title": movie_title}
+
+        movie_names = movies["title"].dropna().tolist()
+        return {"movies": movie_names}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ===============================
-# Get all movies (limit optional)
+# All Movies Endpoint
 # ===============================
 @app.get("/movies", response_model=List[Movie])
 def get_all_movies(limit: int = Query(50, description="Number of movies to fetch")):
     result = []
     for _, row in movies.head(limit).iterrows():
         poster, overview, _ = fetch_poster_and_overview(row.movie_id)
-        result.append(
-            Movie(
-                movie_id=row.movie_id,
-                title=row.title,
-                overview=overview,
-                poster_url=poster,
-            )
-        )
+        result.append(Movie(movie_id=row.movie_id, title=row.title, overview=overview, poster_url=poster))
     return result
 
+# ===============================
+# 🆕 Popular Movies Endpoint (fetch 40 movies)
+# ===============================
+@app.get("/movies/popular", response_model=List[Movie])
+def get_popular_movies(limit: int = Query(40, description="Number of popular movies to fetch")):
+    """
+    Returns a list of popular movies from the dataset (default 40).
+    """
+    try:
+        if "vote_count" in movies.columns:
+            popular_movies = movies.sort_values(by="vote_count", ascending=False).head(limit)
+        elif "popularity" in movies.columns:
+            popular_movies = movies.sort_values(by="popularity", ascending=False).head(limit)
+        else:
+            popular_movies = movies.head(limit)
+
+        results = []
+        for _, row in popular_movies.iterrows():
+            poster, overview, _ = fetch_poster_and_overview(row.movie_id)
+            results.append(Movie(movie_id=row.movie_id, title=row.title, overview=overview, poster_url=poster))
+        return results
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ===============================
-# Get movie by ID
+# Get Movie by ID
 # ===============================
 @app.get("/movies/{movie_id}", response_model=Movie)
 def get_movie_by_id(movie_id: int):
     movie_row = movies[movies["movie_id"] == movie_id]
     if movie_row.empty:
         raise HTTPException(status_code=404, detail="Movie not found")
-
     row = movie_row.iloc[0]
     poster, overview, _ = fetch_poster_and_overview(row.movie_id)
     return Movie(movie_id=row.movie_id, title=row.title, overview=overview, poster_url=poster)
 
-
 # ===============================
-# Get movie by Title (case-insensitive)
+# Get Movie by Title
 # ===============================
 @app.get("/movies/title/{movie_title}", response_model=Movie)
 def get_movie_by_title(movie_title: str):
     movie_row = movies[movies["title"].str.lower() == movie_title.lower()]
     if movie_row.empty:
         raise HTTPException(status_code=404, detail=f"Movie '{movie_title}' not found")
-
     row = movie_row.iloc[0]
     poster, overview, _ = fetch_poster_and_overview(row.movie_id)
     return Movie(movie_id=row.movie_id, title=row.title, overview=overview, poster_url=poster)
 
-
 # ===============================
-# Unified Recommend Endpoint (by ID or Title)
+# Unified Recommendation Endpoint
 # ===============================
 @app.get("/recommend", response_model=List[Movie])
 def recommend(
@@ -132,58 +175,35 @@ def recommend(
         movie_index = movie_index[0]
 
     distances = similarity[movie_index]
-    similar_movies = sorted(
-        list(enumerate(distances)), reverse=True, key=lambda x: x[1]
-    )[1:11]
+    similar_movies = sorted(list(enumerate(distances)), reverse=True, key=lambda x: x[1])[1:11]
 
     results = []
     for i in similar_movies:
         row = movies.iloc[i[0]]
         poster, overview, _ = fetch_poster_and_overview(row.movie_id)
-        results.append(
-            Movie(
-                movie_id=row.movie_id,
-                title=row.title,
-                overview=overview,
-                poster_url=poster,
-            )
-        )
-
+        results.append(Movie(movie_id=row.movie_id, title=row.title, overview=overview, poster_url=poster))
     return results
 
-
 # ===============================
-# Get recommendations by title (dedicated endpoint)
+# Recommendation by Title
 # ===============================
 @app.get("/recommend/title/{movie_title}", response_model=List[Movie])
 def get_recommendations_by_title(movie_title: str):
     movie_row = movies[movies["title"].str.lower() == movie_title.lower()]
     if movie_row.empty:
         raise HTTPException(status_code=404, detail=f"Movie '{movie_title}' not found")
-
     movie_index = movie_row.index[0]
     distances = similarity[movie_index]
-    similar_movies = sorted(
-        list(enumerate(distances)), reverse=True, key=lambda x: x[1]
-    )[1:11]
-
+    similar_movies = sorted(list(enumerate(distances)), reverse=True, key=lambda x: x[1])[1:11]
     recommendations = []
     for i in similar_movies:
         row = movies.iloc[i[0]]
         poster, overview, _ = fetch_poster_and_overview(row.movie_id)
-        recommendations.append(
-            Movie(
-                movie_id=row.movie_id,
-                title=row.title,
-                overview=overview,
-                poster_url=poster,
-            )
-        )
+        recommendations.append(Movie(movie_id=row.movie_id, title=row.title, overview=overview, poster_url=poster))
     return recommendations
 
-
 # ===============================
-# Watchlist Endpoints
+# Watchlist Management
 # ===============================
 @app.get("/watchlist/{username}", response_model=List[Movie])
 def get_watchlist(username: str):
@@ -195,16 +215,8 @@ def get_watchlist(username: str):
             continue
         row = row.iloc[0]
         poster, overview, _ = fetch_poster_and_overview(row.movie_id)
-        result.append(
-            Movie(
-                movie_id=row.movie_id,
-                title=row.title,
-                overview=overview,
-                poster_url=poster,
-            )
-        )
+        result.append(Movie(movie_id=row.movie_id, title=row.title, overview=overview, poster_url=poster))
     return result
-
 
 @app.post("/watchlist/add")
 def add_to_watchlist(item: WatchlistItem):
@@ -214,7 +226,6 @@ def add_to_watchlist(item: WatchlistItem):
         return {"status": "success", "message": f"✅ {item.movie_title} added to {item.username}'s watchlist"}
     else:
         return {"status": "info", "message": f"ℹ️ {item.movie_title} already in watchlist"}
-
 
 @app.post("/watchlist/remove")
 def remove_from_watchlist(item: WatchlistItem):
